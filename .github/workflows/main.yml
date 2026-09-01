@@ -1,0 +1,58 @@
+name: Build FamiPlayer Windows
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build-windows:
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Extract project ZIP
+        shell: powershell
+        run: |
+          $zip = Get-ChildItem -Filter "*.zip" | Select-Object -First 1
+          Expand-Archive -Path $zip.FullName -DestinationPath "project" -Force
+
+      - name: Find Flutter project
+        shell: powershell
+        run: |
+          $pubspec = Get-ChildItem -Path "project" -Filter "pubspec.yaml" -Recurse | Select-Object -First 1
+          if (-not $pubspec) {
+            Write-Error "pubspec.yaml not found"
+          }
+          "PROJECT_DIR=$($pubspec.Directory.FullName)" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8
+
+      - name: Setup Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          cache: true
+
+      - name: Enable Windows
+        run: flutter config --enable-windows-desktop
+
+      - name: Get dependencies
+        working-directory: ${{ env.PROJECT_DIR }}
+        run: flutter pub get
+
+      - name: Build Windows
+        working-directory: ${{ env.PROJECT_DIR }}
+        run: flutter build windows --release
+
+      - name: Create ZIP
+        shell: powershell
+        run: |
+          Compress-Archive `
+            -Path "${{ env.PROJECT_DIR }}\build\windows\x64\runner\Release\*" `
+            -DestinationPath "FamiPlayer-Windows.zip" `
+            -Force
+
+      - name: Upload Windows App
+        uses: actions/upload-artifact@v4
+        with:
+          name: FamiPlayer-Windows
+          path: FamiPlayer-Windows.zip
