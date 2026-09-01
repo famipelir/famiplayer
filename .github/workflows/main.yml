@@ -8,31 +8,59 @@ jobs:
     runs-on: windows-latest
 
     steps:
+
+      # -----------------------------
+      # 1. دریافت مخزن
+      # -----------------------------
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Find ZIP
+
+      # -----------------------------
+      # 2. پیدا کردن ZIP پروژه
+      # -----------------------------
+      - name: Find Project ZIP
         shell: powershell
         run: |
-          $zip = Get-ChildItem -Path . -Filter "*.zip" | Select-Object -First 1
+          $zip = Get-ChildItem -Path . -Filter "*.zip" |
+            Where-Object { $_.Name -notlike "*FamiPlayer-Windows.zip" } |
+            Select-Object -First 1
 
           if (-not $zip) {
-            Write-Error "Project ZIP not found"
+            Write-Error "Flutter project ZIP was not found."
             exit 1
           }
 
-          Write-Host "Found ZIP: $($zip.Name)"
-          "ZIP_PATH=$($zip.FullName)" | Out-File $env:GITHUB_ENV -Encoding utf8
+          Write-Host "Project ZIP found:"
+          Write-Host $zip.FullName
 
-      - name: Extract project ZIP
+          "ZIP_PATH=$($zip.FullName)" |
+            Out-File $env:GITHUB_ENV -Encoding utf8
+
+
+      # -----------------------------
+      # 3. استخراج ZIP
+      # -----------------------------
+      - name: Extract Project
         shell: powershell
         run: |
           Remove-Item "project" -Recurse -Force -ErrorAction SilentlyContinue
-          Expand-Archive -Path "$env:ZIP_PATH" -DestinationPath "project" -Force
 
-      - name: Find Flutter project
+          Expand-Archive `
+            -Path "$env:ZIP_PATH" `
+            -DestinationPath "project" `
+            -Force
+
+          Write-Host "Project extracted."
+
+
+      # -----------------------------
+      # 4. پیدا کردن pubspec.yaml
+      # -----------------------------
+      - name: Find Flutter Project
         shell: powershell
         run: |
+
           $pubspec = Get-ChildItem `
             -Path "project" `
             -Filter "pubspec.yaml" `
@@ -40,75 +68,212 @@ jobs:
             Select-Object -First 1
 
           if (-not $pubspec) {
-            Write-Error "pubspec.yaml not found"
+            Write-Error "pubspec.yaml was not found."
             exit 1
           }
 
           $dir = $pubspec.Directory.FullName
 
-          Write-Host "Flutter project:"
+          Write-Host "Flutter project found:"
           Write-Host $dir
 
-          "PROJECT_DIR=$dir" | Out-File `
-            -FilePath $env:GITHUB_ENV `
-            -Encoding utf8
+          "PROJECT_DIR=$dir" |
+            Out-File $env:GITHUB_ENV -Encoding utf8
 
-      - name: Fix dependencies
-        shell: powershell
-        working-directory: ${{ env.PROJECT_DIR }}
-        run: |
-          $file = "pubspec.yaml"
-          $content = Get-Content $file -Raw
 
-          # Fix media_kit_libs_windows_video
-          $content = $content -replace `
-            'media_kit_libs_windows_video:\s*\S+', `
-            'media_kit_libs_windows_video: ^1.0.11'
-
-          # Fix intl
-          $content = $content -replace `
-            'intl:\s*\S+', `
-            'intl: ^0.20.3'
-
-          Set-Content $file $content -Encoding UTF8
-
-          Write-Host "===== FIXED PUBSPEC ====="
-          Get-Content $file
-
+      # -----------------------------
+      # 5. نصب Flutter
+      # -----------------------------
       - name: Setup Flutter
         uses: subosito/flutter-action@v2
         with:
           channel: stable
           cache: true
 
-      - name: Enable Windows
-        run: flutter config --enable-windows-desktop
 
-      - name: Get dependencies
-        working-directory: ${{ env.PROJECT_DIR }}
-        run: flutter pub get
-
-      - name: Build Windows
-        working-directory: ${{ env.PROJECT_DIR }}
-        run: flutter build windows --release
-
-      - name: Create ZIP
-        shell: powershell
+      # -----------------------------
+      # 6. فعال کردن Windows
+      # -----------------------------
+      - name: Enable Windows Desktop
         run: |
-          $release = "${{ env.PROJECT_DIR }}\build\windows\x64\runner\Release"
+          flutter config --enable-windows-desktop
+          flutter --version
 
-          if (-not (Test-Path $release)) {
-            Write-Error "Release folder not found"
+
+      # -----------------------------
+      # 7. اصلاح وابستگی‌ها
+      # -----------------------------
+      - name: Fix Flutter Dependencies
+        shell: powershell
+        working-directory: ${{ env.PROJECT_DIR }}
+        run: |
+
+          $file = "pubspec.yaml"
+
+          if (-not (Test-Path $file)) {
+            Write-Error "pubspec.yaml not found."
             exit 1
           }
 
+          $content = Get-Content $file -Raw
+
+
+          # media_kit Windows
+          $content = $content -replace `
+            'media_kit_libs_windows_video:\s*\S+', `
+            'media_kit_libs_windows_video: ^1.0.11'
+
+
+          # intl
+          $content = $content -replace `
+            'intl:\s*\S+', `
+            'intl: ^0.20.3'
+
+
+          Set-Content `
+            -Path $file `
+            -Value $content `
+            -Encoding UTF8
+
+
+          Write-Host ""
+          Write-Host "===== FINAL PUBSPEC ====="
+          Get-Content $file
+
+
+      # -----------------------------
+      # 8. بازسازی Windows
+      # -----------------------------
+      - name: Regenerate Windows Project
+        shell: powershell
+        working-directory: ${{ env.PROJECT_DIR }}
+        run: |
+
+          Write-Host "Backing up existing Windows folder..."
+
+          if (Test-Path "windows") {
+            Rename-Item `
+              -Path "windows" `
+              -NewName "windows_backup"
+          }
+
+
+          Write-Host "Generating fresh Windows project..."
+
+          flutter create `
+            --platforms=windows `
+            .
+
+
+          if (-not (Test-Path "windows\CMakeLists.txt")) {
+            Write-Error "Flutter failed to generate Windows project."
+            exit 1
+          }
+
+          Write-Host "Windows project regenerated successfully."
+
+
+      # -----------------------------
+      # 9. دریافت پکیج‌ها
+      # -----------------------------
+      - name: Flutter Pub Get
+        working-directory: ${{ env.PROJECT_DIR }}
+        run: |
+
+          flutter clean
+
+          flutter pub get
+
+
+      # -----------------------------
+      # 10. بررسی Flutter
+      # -----------------------------
+      - name: Flutter Doctor
+        run: |
+          flutter doctor -v
+
+
+      # -----------------------------
+      # 11. Build Windows
+      # -----------------------------
+      - name: Build Windows Release
+        working-directory: ${{ env.PROJECT_DIR }}
+        run: |
+
+          flutter build windows --release
+
+
+      # -----------------------------
+      # 12. پیدا کردن خروجی
+      # -----------------------------
+      - name: Find Windows EXE
+        shell: powershell
+        working-directory: ${{ env.PROJECT_DIR }}
+        run: |
+
+          Write-Host "Searching for EXE files..."
+
+          $exe = Get-ChildItem `
+            -Path "build\windows" `
+            -Filter "*.exe" `
+            -Recurse |
+            Select-Object -First 1
+
+          if (-not $exe) {
+            Write-Error "Windows EXE was not generated."
+            exit 1
+          }
+
+          Write-Host "EXE FOUND:"
+          Write-Host $exe.FullName
+
+
+      # -----------------------------
+      # 13. ساخت ZIP نهایی
+      # -----------------------------
+      - name: Create Windows Package
+        shell: powershell
+        working-directory: ${{ env.PROJECT_DIR }}
+        run: |
+
+          $release = "build\windows\x64\runner\Release"
+
+          if (-not (Test-Path $release)) {
+
+            $release = Get-ChildItem `
+              -Path "build\windows" `
+              -Directory `
+              -Recurse |
+              Where-Object {
+                $_.Name -eq "Release"
+              } |
+              Select-Object -First 1 |
+              Select-Object -ExpandProperty FullName
+          }
+
+
+          if (-not $release) {
+            Write-Error "Release folder was not found."
+            exit 1
+          }
+
+
+          Write-Host "Release folder:"
+          Write-Host $release
+
+
           Compress-Archive `
             -Path "$release\*" `
-            -DestinationPath "FamiPlayer-Windows.zip" `
+            -DestinationPath "$env:GITHUB_WORKSPACE\FamiPlayer-Windows.zip" `
             -Force
 
-      - name: Upload Windows App
+
+      # -----------------------------
+      # 14. آپلود خروجی
+      # -----------------------------
+      - name: Upload Windows Application
         uses: actions/upload-artifact@v4
         with:
           name: FamiPlayer-Windows
           path: FamiPlayer-Windows.zip
+          if-no-files-found: error
