@@ -14,17 +14,50 @@ jobs:
       - name: Extract project ZIP
         shell: powershell
         run: |
-          $zip = Get-ChildItem -Filter "*.zip" | Select-Object -First 1
+          $zip = Get-ChildItem -Path . -Filter "*.zip" | Select-Object -First 1
+
+          if (-not $zip) {
+            Write-Error "Project ZIP not found"
+          }
+
+          Remove-Item -Path "project" -Recurse -Force -ErrorAction SilentlyContinue
           Expand-Archive -Path $zip.FullName -DestinationPath "project" -Force
 
       - name: Find Flutter project
         shell: powershell
         run: |
-          $pubspec = Get-ChildItem -Path "project" -Filter "pubspec.yaml" -Recurse | Select-Object -First 1
+          $pubspec = Get-ChildItem `
+            -Path "project" `
+            -Filter "pubspec.yaml" `
+            -Recurse |
+            Select-Object -First 1
+
           if (-not $pubspec) {
-            Write-Error "pubspec.yaml not found"
+            Write-Error "pubspec.yaml not found inside ZIP"
           }
-          "PROJECT_DIR=$($pubspec.Directory.FullName)" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8
+
+          Write-Host "Flutter project found at:"
+          Write-Host $pubspec.Directory.FullName
+
+          "PROJECT_DIR=$($pubspec.Directory.FullName)" | Out-File `
+            -FilePath $env:GITHUB_ENV `
+            -Encoding utf8
+
+      - name: Fix media_kit Windows dependency
+        shell: powershell
+        working-directory: ${{ env.PROJECT_DIR }}
+        run: |
+          $file = "pubspec.yaml"
+          $content = Get-Content $file -Raw
+
+          $content = $content -replace `
+            'media_kit_libs_windows_video:\s*\^?1\.6\.0', `
+            'media_kit_libs_windows_video: ^1.6.1'
+
+          Set-Content $file $content -Encoding UTF8
+
+          Write-Host "Updated pubspec.yaml"
+          Get-Content $file
 
       - name: Setup Flutter
         uses: subosito/flutter-action@v2
@@ -46,8 +79,14 @@ jobs:
       - name: Create ZIP
         shell: powershell
         run: |
+          $release = "${{ env.PROJECT_DIR }}\build\windows\x64\runner\Release"
+
+          if (-not (Test-Path $release)) {
+            Write-Error "Windows Release folder not found"
+          }
+
           Compress-Archive `
-            -Path "${{ env.PROJECT_DIR }}\build\windows\x64\runner\Release\*" `
+            -Path "$release\*" `
             -DestinationPath "FamiPlayer-Windows.zip" `
             -Force
 
