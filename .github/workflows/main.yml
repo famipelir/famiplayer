@@ -11,17 +11,24 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Extract project ZIP
+      - name: Find ZIP
         shell: powershell
         run: |
           $zip = Get-ChildItem -Path . -Filter "*.zip" | Select-Object -First 1
 
           if (-not $zip) {
             Write-Error "Project ZIP not found"
+            exit 1
           }
 
-          Remove-Item -Path "project" -Recurse -Force -ErrorAction SilentlyContinue
-          Expand-Archive -Path $zip.FullName -DestinationPath "project" -Force
+          Write-Host "Found ZIP: $($zip.Name)"
+          "ZIP_PATH=$($zip.FullName)" | Out-File $env:GITHUB_ENV -Encoding utf8
+
+      - name: Extract project ZIP
+        shell: powershell
+        run: |
+          Remove-Item "project" -Recurse -Force -ErrorAction SilentlyContinue
+          Expand-Archive -Path "$env:ZIP_PATH" -DestinationPath "project" -Force
 
       - name: Find Flutter project
         shell: powershell
@@ -33,30 +40,39 @@ jobs:
             Select-Object -First 1
 
           if (-not $pubspec) {
-            Write-Error "pubspec.yaml not found inside ZIP"
+            Write-Error "pubspec.yaml not found"
+            exit 1
           }
 
-          Write-Host "Flutter project found at:"
-          Write-Host $pubspec.Directory.FullName
+          $dir = $pubspec.Directory.FullName
 
-          "PROJECT_DIR=$($pubspec.Directory.FullName)" | Out-File `
+          Write-Host "Flutter project:"
+          Write-Host $dir
+
+          "PROJECT_DIR=$dir" | Out-File `
             -FilePath $env:GITHUB_ENV `
             -Encoding utf8
 
-      - name: Fix media_kit Windows dependency
+      - name: Fix dependencies
         shell: powershell
         working-directory: ${{ env.PROJECT_DIR }}
         run: |
           $file = "pubspec.yaml"
           $content = Get-Content $file -Raw
 
+          # Fix media_kit_libs_windows_video
           $content = $content -replace `
-            'media_kit_libs_windows_video:\s*\^?1\.6\.0', `
-            'media_kit_libs_windows_video: ^1.6.1'
+            'media_kit_libs_windows_video:\s*\S+', `
+            'media_kit_libs_windows_video: ^1.0.11'
+
+          # Fix intl
+          $content = $content -replace `
+            'intl:\s*\S+', `
+            'intl: ^0.20.3'
 
           Set-Content $file $content -Encoding UTF8
 
-          Write-Host "Updated pubspec.yaml"
+          Write-Host "===== FIXED PUBSPEC ====="
           Get-Content $file
 
       - name: Setup Flutter
@@ -82,7 +98,8 @@ jobs:
           $release = "${{ env.PROJECT_DIR }}\build\windows\x64\runner\Release"
 
           if (-not (Test-Path $release)) {
-            Write-Error "Windows Release folder not found"
+            Write-Error "Release folder not found"
+            exit 1
           }
 
           Compress-Archive `
